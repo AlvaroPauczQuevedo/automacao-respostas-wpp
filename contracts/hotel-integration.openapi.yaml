@@ -1,0 +1,290 @@
+openapi: 3.0.3
+info:
+  title: Contrato de Integração Hoteleira (PMS / Motor de Reservas)
+  version: 0.1.0
+  license: { name: Proprietária }
+  description: |
+    Contrato que o driver `rest` do core consome (services/core/src/integrations/hotel/restDriver.js).
+    Deve ser implementado por um middleware de integração que traduz para a API proprietária do PMS/motor
+    de reservas da rede. Nem todo PMS oferece todas as operações: o driver declara capacidades e o core
+    encaminha para atendimento humano o que não for suportado.
+
+    Requisitos obrigatórios do implementador:
+    - HTTPS, autenticação por Bearer token de serviço, limites de taxa.
+    - `Idempotency-Key` em POST /bookings, /bookings/{code}/cancel e /bookings/{code}/modify:
+      a mesma chave deve retornar o MESMO resultado, sem criar/cancelar/alterar duas vezes.
+    - POST /bookings deve recusar (status=recusada, motivo=PRECO_ALTERADO) se o total atual diferir de
+      `valor_total_esperado` — o cliente só confirmou aquele valor.
+    - Valores monetários como string decimal com ponto ("1234.50") e moeda ISO 4217.
+    - Datas civis AAAA-MM-DD no fuso do hotel.
+    - Respostas 5xx/429 são tratadas como indisponibilidade temporária; 4xx como recusa.
+    STATUS: contrato proposto; nenhum PMS real foi integrado neste projeto.
+servers:
+  - url: https://integracao-pms.exemplo.invalid/v1
+security:
+  - bearer: []
+paths:
+  /health:
+    get:
+      summary: Verificação de saúde
+      responses:
+        '200': { description: OK }
+  /hotels/{hotelCode}/availability:
+    get:
+      summary: Disponibilidade e tarifas
+      parameters:
+        - { name: hotelCode, in: path, required: true, schema: { type: string } }
+        - { name: checkin, in: query, required: true, schema: { type: string, format: date } }
+        - { name: checkout, in: query, required: true, schema: { type: string, format: date } }
+        - { name: adults, in: query, required: true, schema: { type: integer, minimum: 1 } }
+        - { name: children_ages, in: query, required: false, description: 'Lista separada por vírgula', schema: { type: string, example: '4,7' } }
+        - { name: rooms, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        '200':
+          description: Ofertas (lista vazia = sem disponibilidade)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Availability' }
+  /hotels/{hotelCode}/booking-requirements:
+    get:
+      summary: Campos obrigatórios do hóspede para reservar
+      parameters:
+        - { name: hotelCode, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Campos
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [campos]
+                properties:
+                  campos:
+                    type: array
+                    items: { type: string, enum: [nome, sobrenome, email, telefone, documento, pais] }
+  /bookings:
+    post:
+      summary: Cria (e confirma) uma reserva
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, maxLength: 64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BookingRequest' }
+      responses:
+        '200':
+          description: Resultado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BookingResult' }
+  /bookings/by-idempotency-key/{key}:
+    get:
+      summary: Recupera o resultado de uma criação pela chave de idempotência (reconciliação após timeout)
+      parameters:
+        - { name: key, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Encontrada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BookingResult' }
+        '404': { description: Nenhuma reserva criada com esta chave }
+  /bookings/{code}:
+    get:
+      summary: Consulta de reserva (usada para verificação de titularidade e consulta)
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Reserva
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BookingDetails' }
+        '404': { description: Não encontrada }
+  /bookings/{code}/cancellation-quote:
+    post:
+      summary: Condições/multa de cancelamento vigentes
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Cotação
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CancellationQuote' }
+  /bookings/{code}/cancel:
+    post:
+      summary: Cancela a reserva
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Resultado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CancellationResult' }
+  /bookings/{code}/modification-quote:
+    post:
+      summary: Cotação de alteração de datas
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nova_entrada, nova_saida]
+              properties:
+                nova_entrada: { type: string, format: date }
+                nova_saida: { type: string, format: date }
+      responses:
+        '200':
+          description: Cotação
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModificationQuote' }
+  /bookings/{code}/modify:
+    post:
+      summary: Aplica a alteração cotada
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [codigo_oferta]
+              properties:
+                codigo_oferta: { type: string }
+      responses:
+        '200':
+          description: Resultado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModificationResult' }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }
+  schemas:
+    Money: { type: string, pattern: '^\d{1,9}(\.\d{1,2})?$', example: '640.00' }
+    Currency: { type: string, pattern: '^[A-Z]{3}$', example: BRL }
+    Offer:
+      type: object
+      required: [codigo_oferta, hotel_codigo, acomodacao_codigo, acomodacao_nome, valor_total, moeda, noites]
+      properties:
+        codigo_oferta: { type: string, description: 'Chave opaca da oferta/tarifa' }
+        hotel_codigo: { type: string }
+        acomodacao_codigo: { type: string }
+        acomodacao_nome: { type: string }
+        plano_tarifario: { type: string, nullable: true }
+        noites: { type: integer, minimum: 1 }
+        valor_total: { $ref: '#/components/schemas/Money' }
+        valor_medio_diaria: { type: string, pattern: '^\d{1,9}(\.\d{1,2})?$', nullable: true }
+        moeda: { $ref: '#/components/schemas/Currency' }
+        impostos_incluidos: { type: boolean, nullable: true }
+        taxas_descricao: { type: string, nullable: true }
+        politica_cancelamento: { type: string, nullable: true }
+        condicoes_pagamento: { type: string, nullable: true }
+        validade: { type: string, format: date-time, nullable: true, description: 'Até quando a oferta é garantida' }
+        quartos_disponiveis: { type: integer, nullable: true }
+    Availability:
+      type: object
+      required: [ofertas, consultado_em]
+      properties:
+        ofertas: { type: array, maxItems: 50, items: { $ref: '#/components/schemas/Offer' } }
+        consultado_em: { type: string, format: date-time }
+    BookingRequest:
+      type: object
+      required: [codigo_oferta, hotel_codigo, entrada, saida, adultos, quartos, valor_total_esperado, moeda, hospede]
+      properties:
+        codigo_oferta: { type: string }
+        hotel_codigo: { type: string }
+        entrada: { type: string, format: date }
+        saida: { type: string, format: date }
+        adultos: { type: integer }
+        criancas_idades: { type: array, items: { type: integer } }
+        quartos: { type: integer }
+        valor_total_esperado: { $ref: '#/components/schemas/Money' }
+        moeda: { $ref: '#/components/schemas/Currency' }
+        hospede:
+          type: object
+          required: [nome, sobrenome]
+          properties:
+            nome: { type: string }
+            sobrenome: { type: string }
+            email: { type: string }
+            telefone: { type: string }
+            pais: { type: string }
+        origem: { type: string, example: whatsapp_assistente_virtual }
+    BookingResult:
+      type: object
+      required: [status]
+      description: 'Se status=confirmada, código, hotel, datas, valor e moeda são obrigatórios.'
+      properties:
+        status: { type: string, enum: [confirmada, pendente, recusada] }
+        codigo_confirmacao: { type: string, nullable: true }
+        hotel_codigo: { type: string, nullable: true }
+        entrada: { type: string, format: date, nullable: true }
+        saida: { type: string, format: date, nullable: true }
+        valor_total: { type: string, pattern: '^\d{1,9}(\.\d{1,2})?$', nullable: true }
+        moeda: { type: string, pattern: '^[A-Z]{3}$', nullable: true }
+        motivo: { type: string, nullable: true, description: 'PRECO_ALTERADO quando o total divergir do esperado' }
+        instrucoes_chegada: { type: string, nullable: true }
+    BookingDetails:
+      type: object
+      required: [codigo_confirmacao, hotel_codigo, entrada, saida, status, titular_sobrenome]
+      properties:
+        codigo_confirmacao: { type: string }
+        hotel_codigo: { type: string }
+        entrada: { type: string, format: date }
+        saida: { type: string, format: date }
+        status: { type: string, enum: [confirmada, cancelada, pendente, no_show, hospedado, finalizada] }
+        acomodacao_nome: { type: string, nullable: true }
+        quantidade_hospedes: { type: integer, nullable: true }
+        titular_sobrenome: { type: string, description: 'Usado só para verificação; nunca exibido ao cliente' }
+        contato_verificacao_email: { type: string, nullable: true, description: 'Usado só para enviar link de verificação reforçada; nunca exibido' }
+        valor_total: { type: string, pattern: '^\d{1,9}(\.\d{1,2})?$', nullable: true }
+        moeda: { type: string, pattern: '^[A-Z]{3}$', nullable: true }
+        politica_cancelamento: { type: string, nullable: true }
+    CancellationQuote:
+      type: object
+      required: [permitido]
+      properties:
+        permitido: { type: boolean }
+        multa_valor: { type: string, pattern: '^\d{1,9}(\.\d{1,2})?$', nullable: true }
+        moeda: { type: string, pattern: '^[A-Z]{3}$', nullable: true }
+        descricao: { type: string, nullable: true }
+        motivo_recusa: { type: string, nullable: true }
+    CancellationResult:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [cancelada, pendente, recusada] }
+        codigo_cancelamento: { type: string, nullable: true }
+        motivo: { type: string, nullable: true }
+    ModificationQuote:
+      type: object
+      required: [permitido]
+      properties:
+        permitido: { type: boolean }
+        codigo_oferta: { type: string, nullable: true }
+        novo_valor_total: { type: string, pattern: '^\d{1,9}(\.\d{1,2})?$', nullable: true }
+        diferenca: { type: string, nullable: true, pattern: '^-?\d{1,9}(\.\d{1,2})?$' }
+        moeda: { type: string, pattern: '^[A-Z]{3}$', nullable: true }
+        descricao: { type: string, nullable: true }
+        motivo_recusa: { type: string, nullable: true }
+    ModificationResult:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [alterada, pendente, recusada] }
+        entrada: { type: string, format: date, nullable: true }
+        saida: { type: string, format: date, nullable: true }
+        valor_total: { type: string, pattern: '^\d{1,9}(\.\d{1,2})?$', nullable: true }
+        moeda: { type: string, pattern: '^[A-Z]{3}$', nullable: true }
+        motivo: { type: string, nullable: true }

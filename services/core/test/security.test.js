@@ -173,3 +173,35 @@ test('falha de autenticação no endpoint de ferramentas (sem token / papel erra
   const ctx = await makeApp();
   assert.throws(() => auth({ authorization: 'Bearer ' + 'z'.repeat(40) }, ctx.cfg.serviceTokens), (e) => e.status === 401);
 });
+
+test('erro interno (não-domínio) em ferramenta não vaza mensagem técnica ao modelo', async () => {
+  const ctx = await makeApp();
+  const { turn } = await receiveAndBegin(ctx, '5511944440011', 'hotéis?');
+  ctx.app.repo.listHotels = async () => {
+    throw Object.assign(new Error('relation "hotel" does not exist at db.internal:5432 senha=XYZ'), { code: '42P01' });
+  };
+  const r = await tool(ctx, turn.turno_id, 'listar_hoteis', {});
+  assert.equal(r.ok, false);
+  assert.equal(r.erro.codigo, 'ERRO_INTERNO');
+  assert.equal(r.erro.mensagem, 'Erro interno');
+  assert.doesNotMatch(JSON.stringify(r), /relation|db\.internal|senha/);
+});
+
+test('prompts não contêm chaves { } (o agente do n8n trata o prompt de sistema como template)', async () => {
+  const { readFileSync } = await import('node:fs');
+  for (const f of ['prompts/agente-sistema.md']) {
+    const txt = readFileSync(new URL('../' + f, import.meta.url), 'utf8');
+    assert.doesNotMatch(txt, /[{}]/, f);
+  }
+});
+
+test('prompt de sistema contém integralmente as regras obrigatórias do projeto', async () => {
+  const { readFileSync } = await import('node:fs');
+  const txt = readFileSync(new URL('../prompts/agente-sistema.md', import.meta.url), 'utf8');
+  for (const frase of [
+    'Identifique-se como assistente virtual e nunca afirme ser uma pessoa.',
+    'Nunca invente preços, disponibilidade, descontos, confirmações, prazos ou condições.',
+    'Não solicite senhas, códigos de autenticação ou dados completos de cartão de pagamento pelo chat.',
+    'Nunca afirme que uma reserva foi criada, alterada ou cancelada sem confirmação válida do sistema responsável.',
+  ]) assert.ok(txt.includes(frase), frase);
+});

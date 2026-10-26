@@ -1,0 +1,218 @@
+openapi: 3.0.3
+info:
+  title: API do Core do Agente Hoteleiro
+  license: { name: Proprietária }
+  version: 0.1.0
+  description: |
+    API do serviço `services/core`. Rotas `/internal/*` são chamadas pelo n8n (papel `servico_n8n`);
+    `/admin/*` pela equipe (atendente, supervisor, encarregado_dados, admin_tecnico); `/verificacao/*` é
+    a única página pública. Autenticação: `Authorization: Bearer <token>`; o core guarda apenas o SHA-256
+    do token (variável SERVICE_TOKENS). Matriz de permissões: docs/14-matriz-permissoes.md.
+    Erros: `{ "erro": { "codigo", "mensagem", "retentavel", "detalhes" }, "correlacao" }` — erros internos
+    nunca expõem mensagem técnica. Toda resposta traz o cabeçalho `x-correlation-id`.
+servers:
+  - url: http://core:8080
+security:
+  - bearer: []
+tags:
+  - { name: recepcao, description: WF01 }
+  - { name: turnos, description: WF02/WF03 }
+  - { name: ferramentas, description: 'WF03 a WF08 e WF10 (ferramentas da IA)' }
+  - { name: saida, description: WF09 }
+  - { name: operacao, description: WF11/WF12 }
+  - { name: equipe, description: Atendimento humano e privacidade }
+paths:
+  /health:
+    get:
+      security: []
+      summary: Saúde mínima (pública, sem detalhes)
+      responses: { '200': { description: '{ "ok": true }' } }
+  /metrics:
+    get:
+      summary: Métricas Prometheus (admin_tecnico, servico_n8n)
+      responses: { '200': { description: text/plain } }
+  /internal/inbound/verificacao:
+    get:
+      tags: [recepcao]
+      summary: Desafio de inscrição do webhook (hub.mode, hub.verify_token, hub.challenge repassados)
+      responses:
+        '200': { description: '{ "challenge": "..." }' }
+        '403': { description: Token de verificação inválido }
+  /internal/inbound:
+    post:
+      tags: [recepcao]
+      summary: Processa o webhook da Meta (valida assinatura sobre o corpo bruto, normaliza, idempotência)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [corpo_bruto_base64]
+              properties:
+                corpo_bruto_base64: { type: string, description: 'Corpo exatamente como recebido, em base64' }
+                assinatura: { type: string, description: 'Cabeçalho X-Hub-Signature-256' }
+      responses:
+        '200':
+          description: Eventos registrados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversas: { type: array, items: { type: string }, description: Conversas com eventos novos (acionar WF02) }
+                  mensagens_novas: { type: integer }
+                  duplicados: { type: integer }
+                  status_processados: { type: integer }
+                  descartados: { type: integer }
+        '401': { description: Assinatura inválida }
+  /internal/turnos/iniciar:
+    post:
+      tags: [turnos]
+      summary: Obtém a trava da conversa e agrega mensagens pendentes num turno
+      requestBody:
+        content: { application/json: { schema: { type: object, required: [conversa_id], properties: { conversa_id: { type: string } } } } }
+      responses:
+        '200':
+          description: |
+            `acao`: interpretar (chamar WF03; contém turno_id, mensagem_cliente, contexto) | responder (mensagens prontas) |
+            silencio (atendimento humano) | enfileirado | nada_a_fazer. Inclui `ha_pendentes`, `notificar_equipe`.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ResultadoTurno' } } }
+  /internal/turnos/{id}/classificacao:
+    post:
+      tags: [turnos]
+      summary: Registra intenções (validadas contra a lista de 23 categorias) e roteia deterministicamente
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                intencoes:
+                  type: array
+                  items: { type: object, properties: { intencao: { type: string }, confianca: { type: number } } }
+      responses:
+        '200': { description: 'acao=invocar_agente ou acao=responder (encaminhamento/privacidade já tratados)' }
+  /internal/turnos/{id}/resposta:
+    post:
+      tags: [turnos]
+      summary: Resposta final da IA → verificação de saída (guardrails) → mensagens a enviar; encerra o turno
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { texto: { type: string } } } } }
+      responses:
+        '200': { content: { application/json: { schema: { $ref: '#/components/schemas/ResultadoTurno' } } }, description: OK }
+  /internal/turnos/{id}/falha:
+    post:
+      tags: [turnos]
+      summary: Falha da IA/orquestração → mensagem de contingência; encerra o turno
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /internal/agente/configuracao:
+    get:
+      tags: [turnos]
+      summary: Prompt de sistema, prompt do classificador e lista permitida de ferramentas
+      responses: { '200': { description: OK } }
+  /internal/ferramentas/{nome}:
+    post:
+      tags: [ferramentas]
+      summary: Executa uma ferramenta da lista permitida (corpo = argumentos; validação estrita)
+      parameters:
+        - { name: nome, in: path, required: true, schema: { type: string } }
+        - { name: x-turno-id, in: header, required: true, schema: { type: string }, description: Turno aberto; a conversa é derivada dele no servidor }
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200':
+          description: '{ ok: true, resultado } ou { ok: false, erro: { codigo, orientacao, detalhes? } }'
+        '403': { description: Ferramenta fora da lista permitida }
+        '409': { description: Turno encerrado / conversa não elegível }
+  /internal/saida/enviar:
+    post:
+      tags: [saida]
+      summary: Envia mensagem respeitando a política (janela, modelo, opt-out, limites, deduplicação)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversa_id, mensagem, chave_deduplicacao, origem]
+              properties:
+                conversa_id: { type: string }
+                chave_deduplicacao: { type: string }
+                origem: { type: string, enum: [agente, sistema] }
+                finalidade: { type: string, enum: [atendimento, operacional, marketing] }
+                mensagem: { $ref: '#/components/schemas/Mensagem' }
+      responses:
+        '200':
+          description: 'status: enviada | duplicada | bloqueada (motivo, exige_modelo) | adiada (tentar_apos_ms) | falhou (classe, retentavel)'
+  /internal/ops/erros:
+    post: { tags: [operacao], summary: Registro mascarado de erro de workflow, responses: { '200': { description: OK } } }
+  /internal/ops/saude:
+    get: { tags: [operacao], summary: Saúde de banco e integração hoteleira, responses: { '200': { description: OK } } }
+  /internal/ops/varredura:
+    post: { tags: [operacao], summary: 'Reconciliação de reservas pendentes, eventos travados e alertas', responses: { '200': { description: OK } } }
+  /internal/jobs/retencao:
+    post: { tags: [operacao], summary: Executa a política de retenção (retorna somente contagens), responses: { '200': { description: OK } } }
+  /admin/atendimentos:
+    get: { tags: [equipe], summary: Lista solicitações (atendente/supervisor), responses: { '200': { description: OK } } }
+  /admin/atendimentos/{id}/assumir:
+    post: { tags: [equipe], summary: Assume o atendimento, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } }
+  /admin/atendimentos/{id}/mensagens:
+    get: { tags: [equipe], summary: Mensagens recentes (somente o atendente responsável; acesso auditado), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK }, '403': { description: Não atribuído } } }
+  /admin/atendimentos/{id}/responder:
+    post: { tags: [equipe], summary: Atendente responde ao cliente (passa pela política de envio), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } }
+  /admin/atendimentos/{id}/encerrar:
+    post: { tags: [equipe], summary: 'Encerra; retomar_automacao=true devolve a conversa ao assistente', parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } }
+  /admin/privacidade/solicitacoes:
+    get: { tags: [equipe], summary: Lista solicitações de titulares (encarregado_dados), responses: { '200': { description: OK } } }
+  /admin/privacidade/solicitacoes/{id}/estado:
+    post: { tags: [equipe], summary: Atualiza estado/resultado, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } }
+  /admin/privacidade/exportar:
+    post: { tags: [equipe], summary: Exporta dados do titular mantidos neste sistema (após verificação de identidade), responses: { '200': { description: OK } } }
+  /admin/privacidade/eliminar:
+    post: { tags: [equipe], summary: Anonimiza conversas do titular respeitando bloqueio legal, responses: { '200': { description: OK } } }
+  /admin/privacidade/bloqueio-legal:
+    post: { tags: [equipe], summary: Ativa/desativa bloqueio legal de conversa, responses: { '200': { description: OK } } }
+  /admin/modelos:
+    put: { tags: [equipe], summary: Atualiza catálogo local de modelos (estado de aprovação na Meta), responses: { '200': { description: OK } } }
+  /verificacao/{token}:
+    get: { security: [], summary: Página de confirmação de verificação reforçada (GET não confirma), parameters: [{ name: token, in: path, required: true, schema: { type: string } }], responses: { '200': { description: HTML } } }
+    post: { security: [], summary: 'Confirma a verificação (uso único, com expiração)', parameters: [{ name: token, in: path, required: true, schema: { type: string } }], responses: { '200': { description: HTML }, '400': { description: Inválido/expirado } } }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }
+  schemas:
+    Mensagem:
+      oneOf:
+        - { type: object, required: [tipo, texto], properties: { tipo: { enum: [texto] }, texto: { type: string, maxLength: 4096 } } }
+        - type: object
+          required: [tipo, texto, botoes]
+          properties:
+            tipo: { enum: [botoes] }
+            texto: { type: string, maxLength: 1024 }
+            botoes: { type: array, maxItems: 3, items: { type: object, properties: { id: { type: string }, titulo: { type: string, maxLength: 20 } } } }
+        - type: object
+          required: [tipo, modelo]
+          properties:
+            tipo: { enum: [modelo] }
+            modelo: { type: object, properties: { nome: { type: string }, idioma: { type: string }, parametros: { type: array, items: { type: string } } } }
+    ResultadoTurno:
+      type: object
+      properties:
+        acao: { type: string, enum: [interpretar, responder, silencio, enfileirado, nada_a_fazer, invocar_agente] }
+        turno_id: { type: string }
+        conversa_id: { type: string }
+        mensagens:
+          type: array
+          items:
+            type: object
+            properties:
+              conversa_id: { type: string }
+              chave_deduplicacao: { type: string }
+              origem: { type: string }
+              finalidade: { type: string }
+              mensagem: { $ref: '#/components/schemas/Mensagem' }
+        ha_pendentes: { type: boolean }
+        notificar_equipe: { type: boolean }
+        notificar_privacidade: { type: boolean }

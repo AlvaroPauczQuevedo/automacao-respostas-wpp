@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+.DS_Store
+# Exportações do n8n com credenciais nunca devem ser versionadas
+n8n/credenciais*.json
+n8n/**/credentials*.json
