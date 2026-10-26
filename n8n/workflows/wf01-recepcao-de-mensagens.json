@@ -1,0 +1,332 @@
+{
+  "id": "HotelAgentWf0100",
+  "name": "WF01 — Recepção de mensagens",
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "name": "Nota 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -380
+      ],
+      "parameters": {
+        "content": "## WF01 — Recepção de mensagens\nRecebe o webhook oficial da WhatsApp Cloud API. O corpo BRUTO e o cabeçalho `X-Hub-Signature-256` são enviados ao core, que valida a assinatura (App Secret), normaliza, aplica idempotência por `wamid` e devolve as conversas com eventos novos.\n\nA resposta 200 é imediata (a Meta reenvia em caso de erro/timeout).",
+        "width": 520,
+        "height": 240
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000003",
+      "name": "Webhook verificação (GET)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        -100
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "7c1f0d7e-0000-4000-8000-0000000000a1"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000004",
+      "name": "Core: verificar inscrição",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        -100
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "http://core:8080/internal/inbound/verificacao",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify($json.query) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000005",
+      "name": "Responder desafio",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        -160
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.challenge }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000006",
+      "name": "Responder 403",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        -20
+      ],
+      "parameters": {
+        "respondWith": "noData",
+        "options": {
+          "responseCode": 403
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "name": "Webhook eventos (POST)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp",
+        "responseMode": "onReceived",
+        "options": {
+          "rawBody": true,
+          "responseCode": 200
+        }
+      },
+      "webhookId": "7c1f0d7e-0000-4000-8000-0000000000a2"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000008",
+      "name": "Preparar corpo bruto",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        260,
+        200
+      ],
+      "parameters": {
+        "operation": "binaryToPropery",
+        "binaryPropertyName": "data",
+        "destinationKey": "corpo_bruto_base64",
+        "options": {}
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000009",
+      "name": "Core: processar eventos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://core:8080/internal/inbound",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ corpo_bruto_base64: $json.corpo_bruto_base64, assinatura: $('Webhook eventos (POST)').item.json.headers['x-hub-signature-256'] || null }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000010",
+      "name": "Separar conversas",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        780,
+        200
+      ],
+      "parameters": {
+        "fieldToSplitOut": "conversas",
+        "options": {
+          "destinationFieldName": "conversa_id"
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000011",
+      "name": "WF02: gerenciar conversa",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1040,
+        200
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0200"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "conversa_id": "={{ $json.conversa_id }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "conversa_id",
+              "displayName": "conversa_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "any",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook verificação (GET)": {
+      "main": [
+        [
+          {
+            "node": "Core: verificar inscrição",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Core: verificar inscrição": {
+      "main": [
+        [
+          {
+            "node": "Responder desafio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder 403",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook eventos (POST)": {
+      "main": [
+        [
+          {
+            "node": "Preparar corpo bruto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar corpo bruto": {
+      "main": [
+        [
+          {
+            "node": "Core: processar eventos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Core: processar eventos": {
+      "main": [
+        [
+          {
+            "node": "Separar conversas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Separar conversas": {
+      "main": [
+        [
+          {
+            "node": "WF02: gerenciar conversa",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "HotelAgentWf1100"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "descricao": "Webhook oficial → validação → idempotência → WF02"
+  },
+  "tags": []
+}

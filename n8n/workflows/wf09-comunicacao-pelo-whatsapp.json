@@ -1,0 +1,351 @@
+{
+  "id": "HotelAgentWf0900",
+  "name": "WF09 — Comunicação pelo WhatsApp",
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "00000000-0000-4000-8000-000000000106",
+      "name": "Nota 105",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -360
+      ],
+      "parameters": {
+        "content": "## WF09 — Comunicação pelo WhatsApp\nCada mensagem passa pelo core (`/internal/saida/enviar`), que aplica: deduplicação, janela de 24h, modelo aprovado, finalidade, opt-out, limites e conteúdo sensível — e só então chama a Cloud API (com retentativas internas para erros transitórios).\n- `adiada` (limite local) ou `falhou` retentável → aguarda e faz UMA nova tentativa com a MESMA chave de deduplicação\n- `bloqueada`/falha definitiva → registrada; nunca contornada",
+        "width": 560,
+        "height": 220
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000107",
+      "name": "Entrada",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "mensagens",
+              "type": "array"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000108",
+      "name": "Separar mensagens",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "fieldToSplitOut": "mensagens",
+        "options": {}
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000109",
+      "name": "Core: enviar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://core:8080/internal/saida/enviar",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ conversa_id: $('Separar mensagens').item.json.conversa_id, mensagem: $('Separar mensagens').item.json.mensagem, finalidade: $('Separar mensagens').item.json.finalidade, origem: $('Separar mensagens').item.json.origem, chave_deduplicacao: $('Separar mensagens').item.json.chave_deduplicacao }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000111",
+      "name": "Retentar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "00000000-0000-4000-8000-000000000110",
+              "leftValue": "={{ $json.status === 'adiada' || ($json.status === 'falhou' && $json.retentavel === true) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000112",
+      "name": "Aguardar",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        -100
+      ],
+      "parameters": {
+        "amount": "={{ Math.min(60, Math.ceil(($json.tentar_apos_ms || 5000) / 1000)) }}"
+      },
+      "webhookId": "7c1f0d7e-0000-4000-8000-0000000000a9"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000113",
+      "name": "Core: enviar (nova tentativa)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        -100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://core:8080/internal/saida/enviar",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ conversa_id: $('Separar mensagens').item.json.conversa_id, mensagem: $('Separar mensagens').item.json.mensagem, finalidade: $('Separar mensagens').item.json.finalidade, origem: $('Separar mensagens').item.json.origem, chave_deduplicacao: $('Separar mensagens').item.json.chave_deduplicacao }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000115",
+      "name": "Não enviada?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "00000000-0000-4000-8000-000000000114",
+              "leftValue": "={{ ['bloqueada', 'falhou', 'adiada'].includes($json.status) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000116",
+      "name": "Core: registrar falha de envio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        -40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://core:8080/internal/ops/erros",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ origem: 'n8n', workflow: 'WF09', no: 'Core: enviar', codigo: String($json.motivo || $json.classe || $json.status), correlacao: $('Separar mensagens').item.json.chave_deduplicacao }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    }
+  ],
+  "connections": {
+    "Entrada": {
+      "main": [
+        [
+          {
+            "node": "Separar mensagens",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Separar mensagens": {
+      "main": [
+        [
+          {
+            "node": "Core: enviar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Core: enviar": {
+      "main": [
+        [
+          {
+            "node": "Retentar?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retentar?": {
+      "main": [
+        [
+          {
+            "node": "Aguardar",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Não enviada?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aguardar": {
+      "main": [
+        [
+          {
+            "node": "Core: enviar (nova tentativa)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Core: enviar (nova tentativa)": {
+      "main": [
+        [
+          {
+            "node": "Não enviada?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Não enviada?": {
+      "main": [
+        [
+          {
+            "node": "Core: registrar falha de envio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "HotelAgentWf1100"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "descricao": "Envio com política, uma retentativa controlada e registro"
+  },
+  "tags": []
+}

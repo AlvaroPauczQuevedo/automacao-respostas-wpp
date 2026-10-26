@@ -1,0 +1,827 @@
+{
+  "id": "HotelAgentWf0200",
+  "name": "WF02 — Gerenciador de conversas",
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "00000000-0000-4000-8000-000000000013",
+      "name": "Nota 12",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -420
+      ],
+      "parameters": {
+        "content": "## WF02 — Gerenciador de conversas\nObtém a trava exclusiva da conversa e agrega mensagens pendentes em um turno (core `/internal/turnos/iniciar`).\n- `interpretar` → WF03 (IA)\n- `responder` → envio (WF09)\n- `silencio` → conversa com atendente humano; apenas notifica a equipe\n- `enfileirado` → outro turno em andamento; ele processará as pendências\n\nApós o envio, se `ha_pendentes`, reinvoca a si mesmo.",
+        "width": 560,
+        "height": 260
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000014",
+      "name": "Entrada",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "conversa_id",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000015",
+      "name": "Core: iniciar turno",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://core:8080/internal/turnos/iniciar",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ conversa_id: $json.conversa_id }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000019",
+      "name": "Rotear ação",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "00000000-0000-4000-8000-000000000016",
+                    "leftValue": "={{ $json.acao }}",
+                    "rightValue": "interpretar",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "interpretar"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "00000000-0000-4000-8000-000000000017",
+                    "leftValue": "={{ $json.acao }}",
+                    "rightValue": "responder",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "responder"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "00000000-0000-4000-8000-000000000018",
+                    "leftValue": "={{ $json.acao }}",
+                    "rightValue": "silencio",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "silencio"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "nada_a_fazer"
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000020",
+      "name": "WF03: agente de IA",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        740,
+        -160
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0300"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "turno": "={{ $json }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "turno",
+              "displayName": "turno",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "any",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000021",
+      "name": "Core: falha do turno",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1000,
+        -40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://core:8080/internal/turnos/{{ $('Core: iniciar turno').first().json.turno_id }}/falha",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ motivo: \"erro_wf03\" }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000022",
+      "name": "Resultado do turno",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        40
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().map((i) => ({ json: i.json }));"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000024",
+      "name": "Há mensagens?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1480,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "00000000-0000-4000-8000-000000000023",
+              "leftValue": "={{ ($json.mensagens || []).length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000025",
+      "name": "WF09: enviar mensagens",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1720,
+        -40
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0900"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mensagens": "={{ $('Resultado do turno').first().json.mensagens }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "mensagens",
+              "displayName": "mensagens",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "any",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000027",
+      "name": "Notificar equipe?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "00000000-0000-4000-8000-000000000026",
+              "leftValue": "={{ $('Resultado do turno').first().json.notificar_equipe === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000028",
+      "name": "WF08: notificar equipe",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2200,
+        -40
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0800"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "notificar",
+            "conversa_id": "={{ $('Resultado do turno').first().json.conversa_id }}",
+            "atendimento_id": "={{ $('Resultado do turno').first().json.atendimento_id || null }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "any",
+              "removed": false
+            },
+            {
+              "id": "conversa_id",
+              "displayName": "conversa_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "any",
+              "removed": false
+            },
+            {
+              "id": "atendimento_id",
+              "displayName": "atendimento_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "any",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000030",
+      "name": "Notificar privacidade?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2440,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "00000000-0000-4000-8000-000000000029",
+              "leftValue": "={{ $('Resultado do turno').first().json.notificar_privacidade === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000031",
+      "name": "WF10: notificar encarregado",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2680,
+        -40
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf1000"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "notificar",
+            "solicitacao_id": "={{ $('Resultado do turno').first().json.solicitacao_privacidade_id }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "any",
+              "removed": false
+            },
+            {
+              "id": "solicitacao_id",
+              "displayName": "solicitacao_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "any",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000033",
+      "name": "Há pendências?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2920,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "00000000-0000-4000-8000-000000000032",
+              "leftValue": "={{ $('Resultado do turno').first().json.ha_pendentes === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000034",
+      "name": "WF02: próximo turno",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        3160,
+        -40
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0200"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "conversa_id": "={{ $('Resultado do turno').first().json.conversa_id }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "conversa_id",
+              "displayName": "conversa_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "any",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000035",
+      "name": "Nada a fazer",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        740,
+        220
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Entrada": {
+      "main": [
+        [
+          {
+            "node": "Core: iniciar turno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Core: iniciar turno": {
+      "main": [
+        [
+          {
+            "node": "Rotear ação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rotear ação": {
+      "main": [
+        [
+          {
+            "node": "WF03: agente de IA",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resultado do turno",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resultado do turno",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nada a fazer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WF03: agente de IA": {
+      "main": [
+        [
+          {
+            "node": "Resultado do turno",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Core: falha do turno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Core: falha do turno": {
+      "main": [
+        [
+          {
+            "node": "Resultado do turno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resultado do turno": {
+      "main": [
+        [
+          {
+            "node": "Há mensagens?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Há mensagens?": {
+      "main": [
+        [
+          {
+            "node": "WF09: enviar mensagens",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notificar equipe?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WF09: enviar mensagens": {
+      "main": [
+        [
+          {
+            "node": "Notificar equipe?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notificar equipe?": {
+      "main": [
+        [
+          {
+            "node": "WF08: notificar equipe",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notificar privacidade?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WF08: notificar equipe": {
+      "main": [
+        [
+          {
+            "node": "Notificar privacidade?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notificar privacidade?": {
+      "main": [
+        [
+          {
+            "node": "WF10: notificar encarregado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Há pendências?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WF10: notificar encarregado": {
+      "main": [
+        [
+          {
+            "node": "Há pendências?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Há pendências?": {
+      "main": [
+        [
+          {
+            "node": "WF02: próximo turno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "HotelAgentWf1100"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "descricao": "Trava por conversa, roteamento do turno e pós-processamento"
+  },
+  "tags": []
+}

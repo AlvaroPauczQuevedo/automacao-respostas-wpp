@@ -1,0 +1,132 @@
+{
+  "id": "HotelAgentWf1200",
+  "name": "WF12 — Retenção e descarte",
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "00000000-0000-4000-8000-000000000147",
+      "name": "Nota 146",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -300
+      ],
+      "parameters": {
+        "content": "## WF12 — Retenção e descarte\nDiariamente às 03:00 executa a política de retenção no core (prazos configurados por variáveis de ambiente — PROVISÓRIOS até aprovação do encarregado). Respeita bloqueio legal. O resultado contém apenas contagens.",
+        "width": 520,
+        "height": 180
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000148",
+      "name": "Diariamente 03:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000149",
+      "name": "Core: executar retenção",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://core:8080/internal/jobs/retencao",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({}) }}",
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000150",
+      "name": "Resumo (somente contagens)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { executado_em: new Date().toISOString(), ...$input.first().json } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Diariamente 03:00": {
+      "main": [
+        [
+          {
+            "node": "Core: executar retenção",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Core: executar retenção": {
+      "main": [
+        [
+          {
+            "node": "Resumo (somente contagens)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "HotelAgentWf1100"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "descricao": "Execução diária da política de retenção"
+  },
+  "tags": []
+}

@@ -1,0 +1,2108 @@
+{
+  "id": "HotelAgentWf0300",
+  "name": "WF03 — Agente de IA",
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "00000000-0000-4000-8000-000000000037",
+      "name": "Nota 36",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -520
+      ],
+      "parameters": {
+        "content": "## WF03 — Agente de IA\n1. Busca prompt e ferramentas permitidas no core.\n2. Monta a entrada: contexto do sistema + mensagem do cliente marcada como dado não confiável.\n3. Classifica intenções (chamada direta à API com saída JSON estruturada) e envia ao core, que valida e roteia (humano, fraude, privacidade).\n4. Se `invocar_agente`: AI Agent com as ferramentas da lista permitida (sub-workflows WF04–WF08, WF10).\n5. Resposta final passa pelo verificador de saída do core (`/resposta`).\n\nModelo padrão: `claude-opus-5-5` com raciocínio adaptativo (obrigatório: o nó envia `thinking: disabled` por padrão e esse modelo rejeita).",
+        "width": 620,
+        "height": 300
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000038",
+      "name": "Entrada",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "turno",
+              "type": "object"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000039",
+      "name": "Configuração do agente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "http://core:8080/internal/agente/configuracao",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000040",
+      "name": "Montar entrada",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const turno = $('Entrada').first().json.turno;\n// Impede que o cliente \"feche\" a tag de dados e injete instruções com aparência de sistema.\nconst esc = (s) => String(s ?? '').replace(/</g, '‹').replace(/>/g, '›');\nconst ctx = JSON.stringify(turno.contexto);\nconst entrada = `<contexto_conversa>${esc(ctx)}</contexto_conversa>\\n<mensagem_cliente>${esc(turno.mensagem_cliente)}</mensagem_cliente>`;\nconst cfg = $('Configuração do agente').first().json;\n// Requisição de classificação montada aqui (e não numa expressão) para evitar conflito de chaves com a sintaxe {{ }}.\nconst requisicao_classificacao = {\n  model: 'claude-opus-5-5',\n  max_tokens: 1024,\n  thinking: { type: 'adaptive' },\n  output_config: { effort: 'low', format: { type: 'json_schema', schema: {\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"intencoes\",\"idioma\"],\"properties\":{\"intencoes\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"intencao\",\"confianca\"],\"properties\":{\"intencao\":{\"type\":\"string\"},\"confianca\":{\"type\":\"number\"}}}},\"idioma\":{\"type\":\"string\"}}} } },\n  system: cfg.prompt_classificador,\n  messages: [{ role: 'user', content: entrada }],\n};\nreturn [{ json: { turno_id: turno.turno_id, conversa_id: turno.conversa_id, entrada_agente: entrada, requisicao_classificacao } }];"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000041",
+      "name": "Classificar intenção",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "anthropicApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requisicao_classificacao) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "credentials": {
+        "anthropicApi": {
+          "id": "credAnthropic001",
+          "name": "Anthropic - agente hoteleiro"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000042",
+      "name": "Interpretar classificação",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        -40
+      ],
+      "parameters": {
+        "jsCode": "// Saída estruturada: o primeiro bloco de texto contém JSON conforme o esquema. Falha → lista vazia (core decide).\nlet intencoes = [];\ntry {\n  const r = $input.first().json;\n  if (r.stop_reason !== 'refusal') {\n    const txt = (r.content || []).find((b) => b.type === 'text')?.text || '{}';\n    intencoes = JSON.parse(txt).intencoes || [];\n  }\n} catch (e) { intencoes = []; }\nreturn [{ json: { turno_id: $('Montar entrada').first().json.turno_id, intencoes } }];"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000043",
+      "name": "Classificação indisponível",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        120
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { turno_id: $('Montar entrada').first().json.turno_id, intencoes: [] } }];"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000044",
+      "name": "Core: registrar classificação",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://core:8080/internal/turnos/{{ $json.turno_id }}/classificacao",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ intencoes: $json.intencoes }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000046",
+      "name": "Invocar agente?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "00000000-0000-4000-8000-000000000045",
+              "leftValue": "={{ $json.acao }}",
+              "rightValue": "invocar_agente",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000047",
+      "name": "Agente de atendimento",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        1580,
+        -120
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Montar entrada').first().json.entrada_agente }}",
+        "options": {
+          "systemMessage": "={{ $('Configuração do agente').first().json.prompt_sistema }}",
+          "maxIterations": 8,
+          "returnIntermediateSteps": false,
+          "enableStreaming": false
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000048",
+      "name": "Modelo Claude",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        1500,
+        160
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-opus-5-5"
+        },
+        "options": {
+          "maxTokensToSample": 4096,
+          "thinkingMode": "adaptive",
+          "effort": "medium",
+          "promptCaching": "5m"
+        }
+      },
+      "credentials": {
+        "anthropicApi": {
+          "id": "credAnthropic001",
+          "name": "Anthropic - agente hoteleiro"
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000049",
+      "name": "Core: verificar e registrar resposta",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1900,
+        -160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://core:8080/internal/turnos/{{ $('Montar entrada').first().json.turno_id }}/resposta",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ texto: $json.output || \"\" }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000050",
+      "name": "Core: falha da IA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1900,
+        40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://core:8080/internal/turnos/{{ $('Montar entrada').first().json.turno_id }}/falha",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ motivo: \"erro_agente_ia\" }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000051",
+      "name": "Turno já resolvido",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        260
+      ],
+      "parameters": {
+        "jsCode": "return $input.all();"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000052",
+      "name": "listar_hoteis",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1300,
+        420
+      ],
+      "parameters": {
+        "description": "Lista os hotéis publicados da rede (nome, cidade, categoria). Use para apresentar a rede ou quando o cliente não sabe qual hotel escolher. Parâmetros: nenhum parâmetro: envie um objeto vazio.",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0400"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "listar_hoteis",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. nenhum parâmetro: envie um objeto vazio', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000053",
+      "name": "buscar_hoteis_por_cidade",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1460,
+        420
+      ],
+      "parameters": {
+        "description": "Busca hotéis publicados em uma cidade. Parâmetros: cidade (texto, obrigatório).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0400"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "buscar_hoteis_por_cidade",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. cidade (texto, obrigatório)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000054",
+      "name": "consultar_detalhes_hotel",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1620,
+        420
+      ],
+      "parameters": {
+        "description": "Retorna endereço, telefone, horários de check-in/check-out, descrição e tipos de acomodação de um hotel. Parâmetros: hotel_id (texto, obrigatório).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0400"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "consultar_detalhes_hotel",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. hotel_id (texto, obrigatório)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000055",
+      "name": "consultar_comodidades",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1780,
+        420
+      ],
+      "parameters": {
+        "description": "Retorna comodidades e informações de acessibilidade de um hotel. Parâmetros: hotel_id (texto, obrigatório).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0400"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "consultar_comodidades",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. hotel_id (texto, obrigatório)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000056",
+      "name": "consultar_politicas",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1940,
+        420
+      ],
+      "parameters": {
+        "description": "Retorna políticas oficiais vigentes (check-in/out, crianças, animais, cancelamento, alteração, pagamento etc.). Política específica do hotel prevalece sobre a geral da rede. Se requer_validacao_humana for true, não responda e encaminhe. Parâmetros: hotel_id (texto, opcional); categoria (um de: checkin_checkout, criancas, hospede_adicional, animais, cancelamento, alteracao, pagamento, acessibilidade, geral, privacidade, opcional).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0400"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "consultar_politicas",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. hotel_id (texto, opcional); categoria (um de: checkin_checkout, criancas, hospede_adicional, animais, cancelamento, alteracao, pagamento, acessibilidade, geral, privacidade, opcional)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000057",
+      "name": "consultar_faq",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        2100,
+        420
+      ],
+      "parameters": {
+        "description": "Busca respostas oficiais em perguntas frequentes publicadas. Parâmetros: pergunta (texto, obrigatório); hotel_id (texto, opcional).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0400"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "consultar_faq",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. pergunta (texto, obrigatório); hotel_id (texto, opcional)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000058",
+      "name": "atualizar_contexto",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        2260,
+        420
+      ],
+      "parameters": {
+        "description": "Registra preferências de busca já informadas pelo cliente (destino, datas, ocupação), para não perguntar de novo. Não registre nomes, e-mails, documentos ou telefones aqui. Parâmetros: destino (texto, opcional); hotel_id (texto, opcional); entrada (data AAAA-MM-DD, opcional); saida (data AAAA-MM-DD, opcional); adultos (inteiro, opcional); criancas_idades (lista de inteiros, opcional); quartos (inteiro, opcional); preferencias (texto, opcional).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0400"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "atualizar_contexto",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. destino (texto, opcional); hotel_id (texto, opcional); entrada (data AAAA-MM-DD, opcional); saida (data AAAA-MM-DD, opcional); adultos (inteiro, opcional); criancas_idades (lista de inteiros, opcional); quartos (inteiro, opcional); preferencias (texto, opcional)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000059",
+      "name": "consultar_disponibilidade",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        2420,
+        420
+      ],
+      "parameters": {
+        "description": "Consulta disponibilidade e tarifas OFICIAIS no sistema de reservas para um hotel (hotel_id) ou para todos os hotéis de uma cidade (cidade). Exige datas completas e quantidade de hóspedes confirmadas com o cliente. Retorna opções com cotacao_id. Parâmetros: hotel_id (texto, opcional); cidade (texto, opcional); entrada (data AAAA-MM-DD, obrigatório); saida (data AAAA-MM-DD, obrigatório); adultos (inteiro, obrigatório); criancas_idades (lista de inteiros, opcional); quartos (inteiro, opcional); informe hotel_id OU cidade.",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0500"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "consultar_disponibilidade",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. hotel_id (texto, opcional); cidade (texto, opcional); entrada (data AAAA-MM-DD, obrigatório); saida (data AAAA-MM-DD, obrigatório); adultos (inteiro, obrigatório); criancas_idades (lista de inteiros, opcional); quartos (inteiro, opcional); informe hotel_id OU cidade', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000060",
+      "name": "calcular_cotacao",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        2580,
+        420
+      ],
+      "parameters": {
+        "description": "Retorna o detalhamento oficial (total, média por diária, taxas, pagamento, cancelamento, validade) de uma opção já consultada. Não recalcula preços. Parâmetros: cotacao_id (texto, obrigatório).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0500"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "calcular_cotacao",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. cotacao_id (texto, obrigatório)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000061",
+      "name": "iniciar_reserva",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        2740,
+        420
+      ],
+      "parameters": {
+        "description": "Inicia uma reserva para a opção escolhida pelo cliente. Retorna os dados mínimos obrigatórios e o link do aviso de privacidade que deve ser informado antes da coleta. Parâmetros: cotacao_id (texto, obrigatório).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0600"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "iniciar_reserva",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. cotacao_id (texto, obrigatório)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000062",
+      "name": "registrar_dados_hospede",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1300,
+        620
+      ],
+      "parameters": {
+        "description": "Registra os dados do titular da reserva informados pelo cliente (somente os campos obrigatórios retornados por iniciar_reserva). Nunca registre CPF, documentos ou cartão. Parâmetros: cotacao_id (texto, obrigatório); nome (texto, obrigatório); sobrenome (texto, obrigatório); email (texto, opcional); telefone (texto, opcional).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0600"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "registrar_dados_hospede",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. cotacao_id (texto, obrigatório); nome (texto, obrigatório); sobrenome (texto, obrigatório); email (texto, opcional); telefone (texto, opcional)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000063",
+      "name": "solicitar_confirmacao_reserva",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1460,
+        620
+      ],
+      "parameters": {
+        "description": "Revalida preço e disponibilidade e envia ao cliente um resumo oficial com botões de confirmação. A reserva SÓ é criada se o próprio cliente tocar em Confirmar reserva. Você não consegue confirmar reservas. Parâmetros: cotacao_id (texto, obrigatório).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0600"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "solicitar_confirmacao_reserva",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. cotacao_id (texto, obrigatório)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000064",
+      "name": "verificar_titular_reserva",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1620,
+        620
+      ],
+      "parameters": {
+        "description": "Verifica se o cliente é titular de uma reserva existente (código + sobrenome do titular + data de entrada). Necessário antes de consultar, alterar ou cancelar. Parâmetros: codigo_reserva (texto, obrigatório); sobrenome (texto, obrigatório); data_entrada (data AAAA-MM-DD, obrigatório).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0700"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "verificar_titular_reserva",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. codigo_reserva (texto, obrigatório); sobrenome (texto, obrigatório); data_entrada (data AAAA-MM-DD, obrigatório)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000065",
+      "name": "consultar_reserva",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1780,
+        620
+      ],
+      "parameters": {
+        "description": "Consulta situação, datas e acomodação de uma reserva cuja titularidade já foi verificada nesta conversa. Parâmetros: codigo_reserva (texto, obrigatório).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0700"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "consultar_reserva",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. codigo_reserva (texto, obrigatório)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000066",
+      "name": "alterar_reserva",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1940,
+        620
+      ],
+      "parameters": {
+        "description": "Solicita alteração de datas de uma reserva verificada. Consulta condições no sistema oficial e envia resumo com botão de confirmação. Pode exigir verificação reforçada ou atendimento humano. Parâmetros: codigo_reserva (texto, obrigatório); nova_entrada (data AAAA-MM-DD, obrigatório); nova_saida (data AAAA-MM-DD, obrigatório).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0700"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "alterar_reserva",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. codigo_reserva (texto, obrigatório); nova_entrada (data AAAA-MM-DD, obrigatório); nova_saida (data AAAA-MM-DD, obrigatório)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000067",
+      "name": "solicitar_cancelamento",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        2100,
+        620
+      ],
+      "parameters": {
+        "description": "Use somente quando o cliente pedir EXPLICITAMENTE para cancelar uma reserva verificada (não para dúvidas sobre política). Consulta multa no sistema oficial e envia resumo com botão de confirmação. Parâmetros: codigo_reserva (texto, obrigatório).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0700"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "solicitar_cancelamento",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. codigo_reserva (texto, obrigatório)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000068",
+      "name": "encaminhar_atendimento",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        2260,
+        620
+      ],
+      "parameters": {
+        "description": "Transfere a conversa para a equipe humana. O assistente fica em pausa nesta conversa. Inclua um resumo operacional curto, sem dados pessoais. Parâmetros: motivo (um de: solicitacao_cliente, reclamacao_grave, suspeita_fraude, falha_integracao, divergencia_informacao, situacao_excepcional, disputa_cobranca, decisao_comercial, juridico_privacidade, baixa_confianca, insatisfacao_persistente, pagamento, obrigatório); resumo (texto, obrigatório).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0800"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "encaminhar_atendimento",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. motivo (um de: solicitacao_cliente, reclamacao_grave, suspeita_fraude, falha_integracao, divergencia_informacao, situacao_excepcional, disputa_cobranca, decisao_comercial, juridico_privacidade, baixa_confianca, insatisfacao_persistente, pagamento, obrigatório); resumo (texto, obrigatório)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000069",
+      "name": "consultar_estado_atendimento",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        2420,
+        620
+      ],
+      "parameters": {
+        "description": "Informa o estado atual da conversa (ex.: aguardando confirmação, encaminhada) e operações pendentes. Parâmetros: nenhum parâmetro: envie um objeto vazio.",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0700"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "consultar_estado_atendimento",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. nenhum parâmetro: envie um objeto vazio', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000070",
+      "name": "registrar_solicitacao_privacidade",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        2580,
+        620
+      ],
+      "parameters": {
+        "description": "Registra pedido do titular sobre seus dados pessoais (acesso, correção, eliminação, etc.) para análise da equipe de proteção de dados. Não prometa prazos nem a eliminação. Parâmetros: tipo (um de: confirmacao, acesso, correcao, compartilhamento, eliminacao, anonimizacao, bloqueio, revogacao_consentimento, oposicao, portabilidade, outro, obrigatório); descricao (texto, opcional).",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf1000"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "modo": "ferramenta",
+            "ferramenta": "registrar_solicitacao_privacidade",
+            "turno_id": "={{ $('Montar entrada').first().json.turno_id }}",
+            "argumentos": "={{ $fromAI('argumentos', 'Objeto JSON com os parametros da ferramenta. tipo (um de: confirmacao, acesso, correcao, compartilhamento, eliminacao, anonimizacao, bloqueio, revogacao_consentimento, oposicao, portabilidade, outro, obrigatório); descricao (texto, opcional)', 'json') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "modo",
+              "displayName": "modo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ferramenta",
+              "displayName": "ferramenta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "turno_id",
+              "displayName": "turno_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "argumentos",
+              "displayName": "argumentos",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    }
+  ],
+  "connections": {
+    "listar_hoteis": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "buscar_hoteis_por_cidade": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "consultar_detalhes_hotel": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "consultar_comodidades": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "consultar_politicas": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "consultar_faq": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "atualizar_contexto": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "consultar_disponibilidade": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "calcular_cotacao": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "iniciar_reserva": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "registrar_dados_hospede": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "solicitar_confirmacao_reserva": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "verificar_titular_reserva": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "consultar_reserva": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "alterar_reserva": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "solicitar_cancelamento": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "encaminhar_atendimento": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "consultar_estado_atendimento": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "registrar_solicitacao_privacidade": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Entrada": {
+      "main": [
+        [
+          {
+            "node": "Configuração do agente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuração do agente": {
+      "main": [
+        [
+          {
+            "node": "Montar entrada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar entrada": {
+      "main": [
+        [
+          {
+            "node": "Classificar intenção",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classificar intenção": {
+      "main": [
+        [
+          {
+            "node": "Interpretar classificação",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classificação indisponível",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar classificação": {
+      "main": [
+        [
+          {
+            "node": "Core: registrar classificação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classificação indisponível": {
+      "main": [
+        [
+          {
+            "node": "Core: registrar classificação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Core: registrar classificação": {
+      "main": [
+        [
+          {
+            "node": "Invocar agente?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Invocar agente?": {
+      "main": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Turno já resolvido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Modelo Claude": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agente de atendimento",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agente de atendimento": {
+      "main": [
+        [
+          {
+            "node": "Core: verificar e registrar resposta",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Core: falha da IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "HotelAgentWf1100"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "descricao": "Classificação + agente com ferramentas da lista permitida"
+  },
+  "tags": []
+}

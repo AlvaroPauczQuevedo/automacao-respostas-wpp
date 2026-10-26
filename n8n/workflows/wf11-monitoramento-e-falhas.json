@@ -1,0 +1,573 @@
+{
+  "id": "HotelAgentWf1100",
+  "name": "WF11 — Monitoramento e falhas",
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "00000000-0000-4000-8000-000000000128",
+      "name": "Nota 127",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -420
+      ],
+      "parameters": {
+        "content": "## WF11 — Monitoramento e falhas\n- **Error Trigger**: qualquer workflow com erro → registro mascarado no core + alerta.\n- **Varredura (2 min)**: reconcilia reservas com confirmação pendente no PMS, reenfileira eventos travados (máx. 3), detecta filas acumuladas.\n- **Saúde (5 min)**: banco e integração hoteleira.\nAlertas não contêm dados pessoais.",
+        "width": 560,
+        "height": 240
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000129",
+      "name": "Erro em workflow",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000130",
+      "name": "Mascarar erro",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const e = $input.first().json;\nconst msg = String(e.execution?.error?.message || '').replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/g, '[EMAIL]').replace(/\\d{8,}/g, '[NUM]').slice(0, 300);\nreturn [{ json: { origem: 'n8n', workflow: e.workflow?.name || null, no: e.execution?.lastNodeExecuted || null, codigo: e.execution?.error?.name || 'erro', mensagem: msg, correlacao: String(e.execution?.id || '') } }];"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000131",
+      "name": "Core: registrar erro",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://core:8080/internal/ops/erros",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000132",
+      "name": "Alertar responsáveis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://alertas.exemplo.invalid/PENDENTE-configurar",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ tipo: 'erro_workflow', workflow: $('Mascarar erro').first().json.workflow, no: $('Mascarar erro').first().json.no, execucao: $('Mascarar erro').first().json.correlacao }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000133",
+      "name": "A cada 2 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 2
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000134",
+      "name": "Core: varredura",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://core:8080/internal/ops/varredura",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({}) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000135",
+      "name": "Reprocessar conversas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        220
+      ],
+      "parameters": {
+        "jsCode": "return ($input.first().json.conversas_para_reprocessar || []).map((id) => ({ json: { conversa_id: id } }));"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000136",
+      "name": "WF02: reprocessar",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        220
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0200"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "conversa_id": "={{ $json.conversa_id }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "conversa_id",
+              "displayName": "conversa_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "any",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000137",
+      "name": "Notificações de reserva",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        360
+      ],
+      "parameters": {
+        "jsCode": "const n = $('Core: varredura').first().json.notificacoes_reserva || []; return n.length ? [{ json: { mensagens: n } }] : [];"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000138",
+      "name": "WF09: avisar clientes",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        360
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "HotelAgentWf0900"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mensagens": "={{ $json.mensagens }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "mensagens",
+              "displayName": "mensagens",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "any",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000139",
+      "name": "Alertas da varredura",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        500
+      ],
+      "parameters": {
+        "jsCode": "const a = $('Core: varredura').first().json.alertas || []; return a.map((x) => ({ json: x }));"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000140",
+      "name": "Alertar (varredura)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        500
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://alertas.exemplo.invalid/PENDENTE-configurar",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ tipo: $json.tipo, quantidade: $json.quantidade }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000141",
+      "name": "A cada 5 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        700
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000142",
+      "name": "Core: saúde",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        700
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "http://core:8080/internal/ops/saude",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000144",
+      "name": "Saudável?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        700
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "00000000-0000-4000-8000-000000000143",
+              "leftValue": "={{ $json.ok === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000145",
+      "name": "Alertar indisponibilidade",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        780
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://alertas.exemplo.invalid/PENDENTE-configurar",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ tipo: 'componente_indisponivel', componentes: $json.componentes || 'core_inacessivel' }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Erro em workflow": {
+      "main": [
+        [
+          {
+            "node": "Mascarar erro",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mascarar erro": {
+      "main": [
+        [
+          {
+            "node": "Core: registrar erro",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Core: registrar erro": {
+      "main": [
+        [
+          {
+            "node": "Alertar responsáveis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "A cada 2 minutos": {
+      "main": [
+        [
+          {
+            "node": "Core: varredura",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Core: varredura": {
+      "main": [
+        [
+          {
+            "node": "Reprocessar conversas",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notificações de reserva",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alertas da varredura",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reprocessar conversas": {
+      "main": [
+        [
+          {
+            "node": "WF02: reprocessar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notificações de reserva": {
+      "main": [
+        [
+          {
+            "node": "WF09: avisar clientes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alertas da varredura": {
+      "main": [
+        [
+          {
+            "node": "Alertar (varredura)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "A cada 5 minutos": {
+      "main": [
+        [
+          {
+            "node": "Core: saúde",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Core: saúde": {
+      "main": [
+        [
+          {
+            "node": "Saudável?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Saudável?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Alertar indisponibilidade",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "descricao": "Error trigger, varredura/reconciliação e saúde"
+  },
+  "tags": []
+}

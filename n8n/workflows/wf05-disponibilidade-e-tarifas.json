@@ -1,0 +1,189 @@
+{
+  "id": "HotelAgentWf0500",
+  "name": "WF05 — Disponibilidade e tarifas",
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "00000000-0000-4000-8000-000000000078",
+      "name": "Nota 77",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -360
+      ],
+      "parameters": {
+        "content": "## WF05 — Disponibilidade e tarifas\nExecutor das ferramentas deste domínio, chamado pelo agente (WF03).\nDefesa em profundidade: confere a lista permitida do domínio ANTES de chamar o core, que valida novamente parâmetros, turno, conversa e permissões.\n\nFerramentas: `consultar_disponibilidade`, `calcular_cotacao`",
+        "width": 560,
+        "height": 220
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000079",
+      "name": "Entrada",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "modo",
+              "type": "string"
+            },
+            {
+              "name": "ferramenta",
+              "type": "string"
+            },
+            {
+              "name": "turno_id",
+              "type": "string"
+            },
+            {
+              "name": "argumentos",
+              "type": "object"
+            },
+            {
+              "name": "conversa_id",
+              "type": "string"
+            },
+            {
+              "name": "atendimento_id",
+              "type": "string"
+            },
+            {
+              "name": "solicitacao_id",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000080",
+      "name": "Validar ferramenta do domínio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const PERMITIDAS = [\"consultar_disponibilidade\",\"calcular_cotacao\"];\nconst i = $input.first().json;\nif (!PERMITIDAS.includes(i.ferramenta)) throw new Error('Ferramenta fora da lista permitida deste domínio');\nif (typeof i.turno_id !== 'string' || !/^turno_[A-Za-z0-9_-]{6,40}$/.test(i.turno_id)) throw new Error('turno_id inválido');\n// Alguns modelos enviam o objeto como texto JSON.\nlet args = i.argumentos;\nif (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }\nif (!args || typeof args !== 'object' || Array.isArray(args)) args = {};\nreturn [{ json: { ferramenta: i.ferramenta, turno_id: i.turno_id, argumentos: args } }];"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000081",
+      "name": "Core: executar ferramenta",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://core:8080/internal/ferramentas/{{ $json.ferramenta }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-turno-id",
+              "value": "={{ $json.turno_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.argumentos) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "credCoreApi00001",
+          "name": "Core API - servico_n8n"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000082",
+      "name": "Retorno para o agente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Devolve ao modelo apenas o resultado estruturado (ok/resultado ou ok=false/erro com orientação).\nconst r = $input.first().json;\nif (r && r.erro && r.ok === undefined) return [{ json: { ok: false, erro: { codigo: r.erro.codigo, orientacao: 'Operação recusada pelo sistema. Não invente dados; ofereça atendimento humano.' } } }];\nreturn [{ json: r }];"
+      }
+    }
+  ],
+  "connections": {
+    "Entrada": {
+      "main": [
+        [
+          {
+            "node": "Validar ferramenta do domínio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar ferramenta do domínio": {
+      "main": [
+        [
+          {
+            "node": "Core: executar ferramenta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Core: executar ferramenta": {
+      "main": [
+        [
+          {
+            "node": "Retorno para o agente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "HotelAgentWf1100"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "descricao": "Executor de ferramentas: consultar_disponibilidade, calcular_cotacao"
+  },
+  "tags": []
+}
